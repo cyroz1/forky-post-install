@@ -80,8 +80,10 @@ sudo apt install -y flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
 echo "==> steam (flatpak) + mangohud overlay for it"
-flatpak install -y flathub com.valvesoftware.Steam
-flatpak install -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 || \
+# --system pinned: serein's flatpakref adds a user-level flathub, and with
+# flathub in both installations flatpak stops to ask which one (and aborts)
+flatpak install --system -y flathub com.valvesoftware.Steam
+flatpak install --system -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 || \
   echo "mangohud flatpak layer failed, steam still works, native mangohud is installed for native games"
 
 echo "==> serein (native discord client, flatpak from the project's own repo)"
