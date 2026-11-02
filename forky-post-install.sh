@@ -2,13 +2,25 @@
 # post-install setup for amir's debian forky dual boot
 # rig: ryzen 7 7800x3d, rx 7900 gre, gaming + dev
 # run AFTER first boot into debian:  chmod +x forky-post-install.sh && ./forky-post-install.sh
-# safe to re-run, everything is idempotent. reboot when it finishes.
+# if the install was done from the stable (trixie) image, this first upgrades
+# the system to forky, then does the rest. safe to re-run, everything is
+# idempotent. reboot when it finishes.
 
 set -euo pipefail
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "run this as your normal user, it calls sudo itself." >&2
   exit 1
+fi
+
+echo "==> upgrade trixie to forky first, if this came from the stable image"
+# the stable installer is the reliable way in; move the release up before
+# installing anything so every package comes from forky
+if grep -rq trixie /etc/apt/sources.list.d/*.sources 2>/dev/null; then
+  sudo sed -i s/trixie/forky/g /etc/apt/sources.list.d/*.sources
+  sudo apt update
+  DEBIAN_FRONTEND=noninteractive sudo apt full-upgrade -y
+  echo "==> release upgrade done, continuing on forky"
 fi
 
 echo "==> refreshing package lists"
