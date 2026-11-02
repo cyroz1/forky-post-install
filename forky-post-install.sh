@@ -19,6 +19,8 @@ echo "==> upgrade trixie to forky first, if this came from the stable image"
 mapfile -t SRCFILES < <(grep -rl trixie /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || true)
 if [ "${#SRCFILES[@]}" -gt 0 ]; then
   sudo sed -i s/trixie/forky/g "${SRCFILES[@]}"
+  # the installer's cdrom source points at the usb stick; disable it
+  sudo sed -i 's|^deb cdrom|# deb cdrom|' "${SRCFILES[@]}"
   sudo apt update
   DEBIAN_FRONTEND=noninteractive sudo apt full-upgrade -y
   echo "==> release upgrade done, continuing on forky"
@@ -32,6 +34,10 @@ echo "==> making sure contrib + non-free + non-free-firmware are enabled"
 SOURCES=/etc/apt/sources.list.d/debian.sources
 if [ -f "$SOURCES" ]; then
   sudo sed -i -E 's/^Components:.*$/Components: main contrib non-free non-free-firmware/' "$SOURCES"
+fi
+# classic one-line format: add contrib + non-free where they are missing
+if [ -f /etc/apt/sources.list ]; then
+  sudo sed -i -E '/^deb / { /contrib/! s| main| contrib main|; / non-free /! s| non-free-firmware| non-free non-free-firmware| }' /etc/apt/sources.list
 fi
 sudo apt update
 
