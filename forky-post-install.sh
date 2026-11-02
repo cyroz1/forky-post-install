@@ -16,8 +16,9 @@ fi
 echo "==> upgrade trixie to forky first, if this came from the stable image"
 # the stable installer is the reliable way in; move the release up before
 # installing anything so every package comes from forky
-if grep -rq trixie /etc/apt/sources.list.d/*.sources 2>/dev/null; then
-  sudo sed -i s/trixie/forky/g /etc/apt/sources.list.d/*.sources
+mapfile -t SRCFILES < <(grep -rl trixie /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || true)
+if [ "${#SRCFILES[@]}" -gt 0 ]; then
+  sudo sed -i s/trixie/forky/g "${SRCFILES[@]}"
   sudo apt update
   DEBIAN_FRONTEND=noninteractive sudo apt full-upgrade -y
   echo "==> release upgrade done, continuing on forky"
@@ -51,7 +52,9 @@ echo "==> basics + dev tools"
 sudo apt install -y \
   git curl wget ffmpeg fastfetch \
   build-essential obs-studio \
-  gamemode mangohud gamescope
+  gamemode mangohud
+# gamescope is not in trixie (it is in forky); never let it kill the run
+sudo apt install -y gamescope || echo "gamescope unavailable in this release, skipping"
 
 echo "==> ssd trim (weekly, usually on by default, make sure)"
 sudo systemctl enable --now fstrim.timer || true
