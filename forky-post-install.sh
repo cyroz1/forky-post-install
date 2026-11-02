@@ -62,6 +62,16 @@ sudo apt install -y \
 # gamescope is not in trixie (it is in forky); never let it kill the run
 sudo apt install -y gamescope || echo "gamescope unavailable in this release, skipping"
 
+echo "==> media players + utilities (replacing the kde defaults)"
+# video: vlc + mpv, haruna is the kde-native mpv frontend
+# music: strawberry. utilities: qbittorrent, audacity, kid3 (tag editor),
+# mediainfo, yt-dlp. all verified present in forky.
+sudo apt install -y \
+  vlc mpv haruna strawberry \
+  qbittorrent audacity kid3 mediainfo yt-dlp
+# the kde defaults these replace; fine if one is not installed
+sudo apt remove -y dragonplayer elisa juk ktorrent || true
+
 echo "==> ssd trim (weekly, usually on by default, make sure)"
 sudo systemctl enable --now fstrim.timer || true
 
