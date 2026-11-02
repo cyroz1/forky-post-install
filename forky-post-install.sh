@@ -29,6 +29,7 @@ sudo apt update
 echo "==> amd gpu firmware + mesa/vulkan (7900 gre)"
 sudo apt install -y \
   firmware-amd-graphics \
+  firmware-mediatek \
   mesa-vulkan-drivers mesa-vulkan-drivers:i386 \
   libglx-mesa0 libglx-mesa0:i386 \
   libgl1-mesa-dri libgl1-mesa-dri:i386 \
