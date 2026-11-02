@@ -13,6 +13,26 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
+# if we were piped in (curl | bash), $0 is not a real file and everything we
+# launch shares stdin with the script itself, which corrupts the run (flatpak
+# progress output fed back in as commands). save a real copy and re-exec it.
+if [ ! -f "$0" ]; then
+  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/main/forky-post-install.sh" -o /tmp/forky-post-install.sh
+  exec bash /tmp/forky-post-install.sh "$@"
+fi
+
+# survive a dying terminal window: run inside tmux. if the window closes,
+# the session (and any apt upgrade inside it) keeps going. rejoin it with
+#   tmux attach -t forky-setup
+if [ -z "${TMUX:-}" ] && [ -z "${FORKY_SETUP_TMUX:-}" ]; then
+  if ! command -v tmux >/dev/null 2>&1; then
+    sudo apt-get install -y tmux || true
+  fi
+  if command -v tmux >/dev/null 2>&1; then
+    FORKY_SETUP_TMUX=1 exec tmux new-session -A -s forky-setup "bash '$0' $*; echo; echo '=== setup exited, press enter for a shell ==='; bash"
+  fi
+fi
+
 echo "==> upgrade trixie to forky first, if this came from the stable image"
 # the stable installer is the reliable way in; move the release up before
 # installing anything so every package comes from forky
@@ -54,6 +74,24 @@ sudo apt install -y \
   libgl1-mesa-dri libgl1-mesa-dri:i386 \
   vulkan-tools
 
+echo "==> core anchors (desktop + networking must never go missing)"
+# an interrupted upgrade + fix-broken churn once removed network-manager,
+# dolphin and the sddm theme from a live system. installing them explicitly
+# marks them manual, so no autoremove can ever orphan them away.
+sudo apt install -y \
+  kde-plasma-desktop sddm sddm-theme-breeze \
+  network-manager plasma-nm wpasupplicant \
+  dolphin konsole
+# if systemd-networkd was used as a rescue bridge to get online, hand over
+# to network-manager now that it exists again
+if systemctl is-active --quiet systemd-networkd && [ -f /etc/systemd/network/10-wired.network ]; then
+  sudo systemctl enable --now NetworkManager || true
+  if systemctl is-active --quiet NetworkManager; then
+    sudo systemctl disable --now systemd-networkd || true
+    sudo rm -f /etc/systemd/network/10-wired.network
+  fi
+fi
+
 echo "==> basics + dev tools"
 sudo apt install -y \
   git curl wget ffmpeg fastfetch \
@@ -82,12 +120,12 @@ flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.f
 echo "==> steam (flatpak) + mangohud overlay for it"
 # --system pinned: serein's flatpakref adds a user-level flathub, and with
 # flathub in both installations flatpak stops to ask which one (and aborts)
-flatpak install --system -y flathub com.valvesoftware.Steam
-flatpak install --system -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 || \
+flatpak install --system -y flathub com.valvesoftware.Steam </dev/null
+flatpak install --system -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 </dev/null || \
   echo "mangohud flatpak layer failed, steam still works, native mangohud is installed for native games"
 
 echo "==> serein (native discord client, flatpak from the project's own repo)"
-flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.flatpakref || \
+flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.flatpakref </dev/null || \
   echo "serein flatpak install failed, grab it later from the serein github releases"
 
 echo "==> thorium browser (from thorium's own apt repo)"
@@ -116,7 +154,13 @@ balooctl6 disable 2>/dev/null || balooctl disable 2>/dev/null || true
 sudo apt install -y dolphin
 # orphaned packages + leftover configs from everything installed above,
 # plus the downloaded .deb cache (gigabytes after a release upgrade)
-sudo apt autoremove --purge -y
+# heal anything half-configured first and re-anchor the core before any
+# removal pass, and no --purge: a leftover config file is harmless, a
+# wrongly purged package is not.
+sudo dpkg --configure -a
+sudo apt --fix-broken install -y
+sudo apt install -y kde-plasma-desktop network-manager dolphin
+sudo apt autoremove -y
 sudo apt clean
 # 32gb of ram: swap is a last resort, not a scratchpad
 echo "vm.swappiness=10" | sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null
@@ -150,6 +194,19 @@ fi
 #   sudo systemctl enable --now lactd
 # fi
 # ---------------------------------------------------------------------------
+
+echo "==> sanity check"
+missing=""
+for cmd in dolphin konsole codex; do
+  command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
+done
+systemctl cat NetworkManager.service >/dev/null 2>&1 || missing="$missing network-manager"
+if [ -n "$missing" ]; then
+  echo "WARNING, still missing:$missing" >&2
+  echo "re-run this script once you are back online and it will fill the gaps" >&2
+else
+  echo "core pieces all present: desktop, file manager, terminal, networking"
+fi
 
 echo
 echo "done. reboot, then check the gpu stack with:  vulkaninfo --summary | grep -A2 deviceName"
