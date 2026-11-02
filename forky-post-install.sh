@@ -101,6 +101,30 @@ wget -O /tmp/chatgpt_amd64.deb https://persistent.oaistatic.com/codex-app-prod/l
 wget -O /tmp/openai-codex.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/openai-codex_0.166.0_amd64.deb
 sudo apt install -y /tmp/chatgpt_amd64.deb /tmp/openai-codex.deb
 
+echo "==> optimize + debloat"
+# startup services a gaming desktop does not need. all reversible with
+# systemctl enable. (bluetooth and wifi deliberately left alone)
+for svc in ModemManager avahi-daemon avahi-daemon.socket cups cups-browsed cups.socket NetworkManager-wait-online; do
+  sudo systemctl disable --now "$svc" 2>/dev/null || true
+done
+# kde file indexer, the classic background hog
+balooctl6 disable 2>/dev/null || balooctl disable 2>/dev/null || true
+# orphaned packages + leftover configs from everything installed above,
+# plus the downloaded .deb cache (gigabytes after a release upgrade)
+sudo apt autoremove --purge -y
+sudo apt clean
+# 32gb of ram: swap is a last resort, not a scratchpad
+echo "vm.swappiness=10" | sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null
+sudo sysctl -w vm.swappiness=10 >/dev/null
+# cap how much disk the systemd journal can grow to
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=200M\n' | sudo tee /etc/systemd/journald.conf.d/99-size-cap.conf >/dev/null
+# quick dual boot menu
+if [ -f /etc/default/grub ]; then
+  sudo sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/' /etc/default/grub
+  sudo update-grub
+fi
+
 # ---------------------------------------------------------------------------
 # clock fight fix (windows uses local time, linux defaults to utc)
 # pick ONE side only. the install guide had you do the windows registry fix.
