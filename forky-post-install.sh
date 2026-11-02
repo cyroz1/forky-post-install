@@ -84,11 +84,11 @@ sudo apt install -y \
   dolphin konsole
 # if systemd-networkd was used as a rescue bridge to get online, hand over
 # to network-manager now that it exists again
-if systemctl is-active --quiet systemd-networkd && [ -f /etc/systemd/network/10-wired.network ]; then
+if systemctl is-active --quiet systemd-networkd && ls /etc/systemd/network/10-*.network >/dev/null 2>&1; then
   sudo systemctl enable --now NetworkManager || true
   if systemctl is-active --quiet NetworkManager; then
     sudo systemctl disable --now systemd-networkd || true
-    sudo rm -f /etc/systemd/network/10-wired.network
+    sudo rm -f /etc/systemd/network/10-wired.network /etc/systemd/network/10-wifi.network
   fi
 fi
 
