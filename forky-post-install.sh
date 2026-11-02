@@ -111,6 +111,9 @@ for svc in ModemManager avahi-daemon avahi-daemon.socket cups cups-browsed cups.
 done
 # kde file indexer, the classic background hog
 balooctl6 disable 2>/dev/null || balooctl disable 2>/dev/null || true
+# make sure the file manager is actually there and marked manual, so
+# autoremove can never eat it (an interrupted upgrade can orphan it)
+sudo apt install -y dolphin
 # orphaned packages + leftover configs from everything installed above,
 # plus the downloaded .deb cache (gigabytes after a release upgrade)
 sudo apt autoremove --purge -y
