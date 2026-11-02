@@ -61,12 +61,13 @@ sudo wget --no-hsts -P /etc/apt/sources.list.d/ https://dl.thorium.rocks/debian/
 sudo apt update
 sudo apt install -y thorium-browser
 
-echo "==> chatgpt + codex (.deb packages hosted on your forky-post-install repo)"
-# chatgpt: no official linux app exists; this deb is a launcher that opens chatgpt.com in a thorium app window (depends on thorium-browser above)
-# codex: openai ships no deb; this deb wraps their official 0.166.0 linux binary from the openai/codex github release
-wget -O /tmp/chatgpt-app.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/chatgpt-app_1.0.0_all.deb
+echo "==> chatgpt (official .deb) + codex cli (.deb hosted on your forky-post-install repo)"
+# chatgpt desktop app for linux is official now (preview): this is openai's own .deb, it also sets up their signed repo for updates
+# their support list names debian 13; forky is testing (future 14), should work but is not formally listed
+# codex: openai ships no .deb for the standalone cli; this deb wraps their official 0.166.0 linux binary from the openai/codex github release
+wget -O /tmp/chatgpt_amd64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
 wget -O /tmp/openai-codex.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/openai-codex_0.166.0_amd64.deb
-sudo apt install -y /tmp/chatgpt-app.deb /tmp/openai-codex.deb
+sudo apt install -y /tmp/chatgpt_amd64.deb /tmp/openai-codex.deb
 
 # ---------------------------------------------------------------------------
 # clock fight fix (windows uses local time, linux defaults to utc)
