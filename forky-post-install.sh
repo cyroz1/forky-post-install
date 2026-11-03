@@ -73,9 +73,12 @@ SOURCES=/etc/apt/sources.list.d/debian.sources
 if [ -f "$SOURCES" ]; then
   sudo sed -i -E 's/^Components:.*$/Components: main contrib non-free non-free-firmware/' "$SOURCES"
 fi
-# classic one-line format: add contrib + non-free where they are missing
+# classic one-line format: append any missing component at the end of the
+# line (component order does not matter to apt). the old sed only added
+# non-free-firmware when it was already there, so a main-only installer
+# line stayed main-only and firmware packages had no candidate.
 if [ -f /etc/apt/sources.list ]; then
-  sudo sed -i -E '/^deb / { /contrib/! s| main| contrib main|; / non-free /! s| non-free-firmware| non-free non-free-firmware| }' /etc/apt/sources.list
+  sudo sed -i -E '/^deb / { /non-free-firmware/! s|$| non-free-firmware|; / non-free /! s|$| non-free|; /contrib/! s|$| contrib| }' /etc/apt/sources.list
 fi
 sudo apt update
 
@@ -88,21 +91,21 @@ else
 fi
 
 echo "==> gpu firmware + mesa/vulkan"
-# firmware packages are arch-independent and mesa/vulkan exist on arm64 too
-# (verified on packages.debian.org/forky/arm64); only the :i386 driver
-# variants are amd64-only, for steam/wine
+# the firmware packages are for the main rig's physical hardware (amd gpu +
+# mediatek wifi) and live on their own tolerant lines: a missing firmware
+# package must never kill the run or take mesa down with it. mesa/vulkan
+# exist on arm64 too; only the :i386 driver variants are amd64-only.
 if [ "$ARCH" = "amd64" ]; then
+  sudo apt install -y firmware-amd-graphics || echo "firmware-amd-graphics unavailable, skipping"
+  sudo apt install -y firmware-mediatek || echo "firmware-mediatek unavailable, skipping"
   sudo apt install -y \
-    firmware-amd-graphics \
-    firmware-mediatek \
     mesa-vulkan-drivers mesa-vulkan-drivers:i386 \
     libglx-mesa0 libglx-mesa0:i386 \
     libgl1-mesa-dri libgl1-mesa-dri:i386 \
     vulkan-tools
 else
+  echo "skipping amd/mediatek firmware on $ARCH (no such hardware there)"
   sudo apt install -y \
-    firmware-amd-graphics \
-    firmware-mediatek \
     mesa-vulkan-drivers \
     libglx-mesa0 \
     libgl1-mesa-dri \
