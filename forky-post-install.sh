@@ -5,9 +5,8 @@
 # handful of x86-only things (steam, thorium, 32-bit libs) skip cleanly
 # instead of breaking the run.
 # run AFTER first boot into debian:  chmod +x forky-post-install.sh && ./forky-post-install.sh
-# if the install was done from the stable (trixie) image, this first upgrades
-# the system to forky, then does the rest. safe to re-run, everything is
-# idempotent. reboot when it finishes.
+# Complete the Debian release upgrade to forky before running this script.
+# Reboot when it finishes.
 
 set -euo pipefail
 
@@ -26,13 +25,15 @@ esac
 # launch shares stdin with the script itself, which corrupts the run (flatpak
 # progress output fed back in as commands). save a real copy and re-exec it.
 if [ ! -f "$0" ]; then
-  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/main/forky-post-install.sh" -o /tmp/forky-post-install.sh
+  BOOTSTRAP_DIR="$(mktemp -d)"
+  chmod 700 "$BOOTSTRAP_DIR"
+  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/main/forky-post-install.sh" -o "$BOOTSTRAP_DIR/forky-post-install.sh"
   # hand stdin back to the real terminal: the pipe is exhausted by now, and
   # leaving it attached makes tmux die with "open terminal failed"
   if [ -e /dev/tty ]; then
-    exec bash /tmp/forky-post-install.sh "$@" </dev/tty
+    exec bash "$BOOTSTRAP_DIR/forky-post-install.sh" "$@" </dev/tty
   fi
-  exec bash /tmp/forky-post-install.sh "$@"
+  exec bash "$BOOTSTRAP_DIR/forky-post-install.sh" "$@"
 fi
 
 # survive a dying terminal window: run inside tmux. if the window closes,
@@ -46,7 +47,9 @@ if [ -z "${TMUX:-}" ] && [ -z "${FORKY_SETUP_TMUX:-}" ]; then
       sudo apt-get install -y tmux || true
     fi
     if command -v tmux >/dev/null 2>&1; then
-      FORKY_SETUP_TMUX=1 exec tmux new-session -A -s forky-setup "bash '$0' $*; echo; echo '=== setup exited, press enter for a shell ==='; bash"
+      printf -v TMUX_SCRIPT '%q' "$0"
+      printf -v TMUX_ARGS ' %q' "$@"
+      FORKY_SETUP_TMUX=1 exec tmux new-session -A -s forky-setup "bash $TMUX_SCRIPT$TMUX_ARGS; echo; echo '=== setup exited, press enter for a shell ==='; bash"
     fi
   fi
 fi
@@ -54,14 +57,11 @@ fi
 echo "==> upgrade trixie to forky first, if this came from the stable image"
 # the stable installer is the reliable way in; move the release up before
 # installing anything so every package comes from forky
-mapfile -t SRCFILES < <(grep -rl trixie /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || true)
-if [ "${#SRCFILES[@]}" -gt 0 ]; then
-  sudo sed -i s/trixie/forky/g "${SRCFILES[@]}"
-  # the installer's cdrom source points at the usb stick; disable it
-  sudo sed -i 's|^deb cdrom|# deb cdrom|' "${SRCFILES[@]}"
-  sudo apt update
-  DEBIAN_FRONTEND=noninteractive sudo apt full-upgrade -y
-  echo "==> release upgrade done, continuing on forky"
+# Release upgrades require reviewing all sources and the proposed package changes.
+# Never rewrite third-party sources or leave an unattended partial upgrade.
+if find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec grep -El '(^|[[:space:]])trixie([[:space:]]|$)' {} + 2>/dev/null | grep -q .; then
+  echo "Trixie sources detected. Complete the Debian release upgrade to forky manually, then rerun this script." >&2
+  exit 1
 fi
 
 echo "==> refreshing package lists"
@@ -120,15 +120,8 @@ sudo apt install -y \
   kde-plasma-desktop sddm sddm-theme-breeze \
   network-manager plasma-nm wpasupplicant \
   dolphin konsole
-# if systemd-networkd was used as a rescue bridge to get online, hand over
-# to network-manager now that it exists again
-if systemctl is-active --quiet systemd-networkd && ls /etc/systemd/network/10-*.network >/dev/null 2>&1; then
-  sudo systemctl enable --now NetworkManager || true
-  if systemctl is-active --quiet NetworkManager; then
-    sudo systemctl disable --now systemd-networkd || true
-    sudo rm -f /etc/systemd/network/10-wired.network /etc/systemd/network/10-wifi.network
-  fi
-fi
+# Leave existing network management and configuration in place. A safe
+# handover requires confirming the active connection on the target machine.
 
 echo "==> vmware guest tools (only inside a vmware vm)"
 # fusion on apple silicon gives arm linux guests no vmware-shipped tools, so
@@ -184,40 +177,15 @@ flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.f
   echo "serein flatpak install failed, grab it later from the serein github releases"
 
 if [ "$ARCH" = "amd64" ]; then
-  echo "==> thorium browser (from thorium's own apt repo)"
-  sudo wget --no-hsts -P /etc/apt/sources.list.d/ https://dl.thorium.rocks/debian/dists/stable/thorium.list
-  sudo apt update
-  sudo apt install -y thorium-browser
+  echo "==> installing Chromium; install Thorium separately after verifying its repository instructions"
+  sudo apt install -y chromium || echo "chromium unavailable in this release, skipping"
 else
-  echo "==> skipping thorium on $ARCH: its apt repo is amd64 only, installing chromium instead"
+  echo "==> installing chromium on $ARCH"
   sudo apt install -y chromium || echo "chromium unavailable in this release, skipping"
 fi
 
-echo "==> chatgpt (official .deb) + codex cli"
-# chatgpt desktop app for linux is official now (preview): openai's own .deb, it also sets up their signed repo for updates
-# their support list names debian 13; forky is testing (future 14), should work but is not formally listed
-# openai publishes the chatgpt .deb for both amd64 and arm64 (same url pattern, arch swapped)
-# codex: openai ships no .deb for the standalone cli; on amd64 this installs the deb on your
-# forky-post-install repo's releases, which wraps their official 0.166.0 linux binary. there is
-# no arm64 version of that deb, so on arm64 it installs openai's official aarch64 musl tarball
-# from the openai/codex github release straight into /usr/local/bin instead.
-if [ "$ARCH" = "amd64" ]; then
-  wget -O /tmp/chatgpt_amd64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
-  wget -O /tmp/openai-codex.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/openai-codex_0.166.0_amd64.deb
-  sudo apt install -y /tmp/chatgpt_amd64.deb /tmp/openai-codex.deb
-else
-  wget -O /tmp/chatgpt_arm64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb
-  sudo apt install -y /tmp/chatgpt_arm64.deb
-  wget -O /tmp/codex-aarch64.tar.gz https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-aarch64-unknown-linux-musl.tar.gz
-  rm -rf /tmp/codex-aarch64 && mkdir -p /tmp/codex-aarch64
-  tar -xzf /tmp/codex-aarch64.tar.gz -C /tmp/codex-aarch64
-  CODEX_BIN="$(find /tmp/codex-aarch64 -type f -name 'codex-*' | head -1)"
-  if [ -n "$CODEX_BIN" ]; then
-    sudo install -m 0755 "$CODEX_BIN" /usr/local/bin/codex
-  else
-    echo "codex binary not found inside the aarch64 tarball, grab it manually from the openai/codex releases" >&2
-  fi
-fi
+echo "==> ChatGPT and Codex: install separately after verifying official packages"
+echo "    Automatic installation is skipped because this script does not have trusted package signatures or pinned checksums."
 
 echo "==> optimize + debloat"
 # startup services a gaming desktop does not need. all reversible with
