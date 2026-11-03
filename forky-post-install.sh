@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # post-install setup for amir's debian forky dual boot
-# rig: ryzen 7 7800x3d, rx 7900 gre, gaming + dev
+# main rig: ryzen 7 7800x3d, rx 7900 gre, gaming + dev (amd64)
+# also runs on arm64 machines: arch-specific pieces branch below, and the
+# handful of x86-only things (steam, thorium, 32-bit libs) skip cleanly
+# instead of breaking the run.
 # run AFTER first boot into debian:  chmod +x forky-post-install.sh && ./forky-post-install.sh
 # if the install was done from the stable (trixie) image, this first upgrades
 # the system to forky, then does the rest. safe to re-run, everything is
@@ -12,6 +15,12 @@ if [ "$(id -u)" -eq 0 ]; then
   echo "run this as your normal user, it calls sudo itself." >&2
   exit 1
 fi
+
+ARCH="$(dpkg --print-architecture)"
+case "$ARCH" in
+  amd64|arm64) echo "==> architecture: $ARCH" ;;
+  *) echo "unsupported architecture: $ARCH (this script handles amd64 and arm64)" >&2; exit 1 ;;
+esac
 
 # if we were piped in (curl | bash), $0 is not a real file and everything we
 # launch shares stdin with the script itself, which corrupts the run (flatpak
@@ -61,18 +70,35 @@ if [ -f /etc/apt/sources.list ]; then
 fi
 sudo apt update
 
-echo "==> 32-bit support (steam/wine need it)"
-sudo dpkg --add-architecture i386
-sudo apt update
+if [ "$ARCH" = "amd64" ]; then
+  echo "==> 32-bit support (steam/wine need it)"
+  sudo dpkg --add-architecture i386
+  sudo apt update
+else
+  echo "==> skipping 32-bit (i386) support on $ARCH"
+fi
 
-echo "==> amd gpu firmware + mesa/vulkan (7900 gre)"
-sudo apt install -y \
-  firmware-amd-graphics \
-  firmware-mediatek \
-  mesa-vulkan-drivers mesa-vulkan-drivers:i386 \
-  libglx-mesa0 libglx-mesa0:i386 \
-  libgl1-mesa-dri libgl1-mesa-dri:i386 \
-  vulkan-tools
+echo "==> gpu firmware + mesa/vulkan"
+# firmware packages are arch-independent and mesa/vulkan exist on arm64 too
+# (verified on packages.debian.org/forky/arm64); only the :i386 driver
+# variants are amd64-only, for steam/wine
+if [ "$ARCH" = "amd64" ]; then
+  sudo apt install -y \
+    firmware-amd-graphics \
+    firmware-mediatek \
+    mesa-vulkan-drivers mesa-vulkan-drivers:i386 \
+    libglx-mesa0 libglx-mesa0:i386 \
+    libgl1-mesa-dri libgl1-mesa-dri:i386 \
+    vulkan-tools
+else
+  sudo apt install -y \
+    firmware-amd-graphics \
+    firmware-mediatek \
+    mesa-vulkan-drivers \
+    libglx-mesa0 \
+    libgl1-mesa-dri \
+    vulkan-tools
+fi
 
 echo "==> core anchors (desktop + networking must never go missing)"
 # an interrupted upgrade + fix-broken churn once removed network-manager,
@@ -117,29 +143,58 @@ echo "==> flatpak + flathub"
 sudo apt install -y flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
-echo "==> steam (flatpak) + mangohud overlay for it"
-# --system pinned: serein's flatpakref adds a user-level flathub, and with
-# flathub in both installations flatpak stops to ask which one (and aborts)
-flatpak install --system -y flathub com.valvesoftware.Steam </dev/null
-flatpak install --system -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 </dev/null || \
-  echo "mangohud flatpak layer failed, steam still works, native mangohud is installed for native games"
+if [ "$ARCH" = "amd64" ]; then
+  echo "==> steam (flatpak) + mangohud overlay for it"
+  # --system pinned: serein's flatpakref adds a user-level flathub, and with
+  # flathub in both installations flatpak stops to ask which one (and aborts)
+  flatpak install --system -y flathub com.valvesoftware.Steam </dev/null
+  flatpak install --system -y flathub org.freedesktop.Platform.VulkanLayer.MangoHud//24.08 </dev/null || \
+    echo "mangohud flatpak layer failed, steam still works, native mangohud is installed for native games"
+else
+  echo "==> skipping steam on $ARCH: the flathub steam build is x86_64 only"
+  echo "    (native arm64 games still get the apt gamemode + mangohud installed above;"
+  echo "     running x86 steam on arm64 needs fex/box64 emulation, not set up here)"
+fi
 
 echo "==> serein (native discord client, flatpak from the project's own repo)"
 flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.flatpakref </dev/null || \
   echo "serein flatpak install failed, grab it later from the serein github releases"
 
-echo "==> thorium browser (from thorium's own apt repo)"
-sudo wget --no-hsts -P /etc/apt/sources.list.d/ https://dl.thorium.rocks/debian/dists/stable/thorium.list
-sudo apt update
-sudo apt install -y thorium-browser
+if [ "$ARCH" = "amd64" ]; then
+  echo "==> thorium browser (from thorium's own apt repo)"
+  sudo wget --no-hsts -P /etc/apt/sources.list.d/ https://dl.thorium.rocks/debian/dists/stable/thorium.list
+  sudo apt update
+  sudo apt install -y thorium-browser
+else
+  echo "==> skipping thorium on $ARCH: its apt repo is amd64 only, installing chromium instead"
+  sudo apt install -y chromium || echo "chromium unavailable in this release, skipping"
+fi
 
-echo "==> chatgpt (official .deb) + codex cli (.deb hosted on your forky-post-install repo)"
-# chatgpt desktop app for linux is official now (preview): this is openai's own .deb, it also sets up their signed repo for updates
+echo "==> chatgpt (official .deb) + codex cli"
+# chatgpt desktop app for linux is official now (preview): openai's own .deb, it also sets up their signed repo for updates
 # their support list names debian 13; forky is testing (future 14), should work but is not formally listed
-# codex: openai ships no .deb for the standalone cli; this deb wraps their official 0.166.0 linux binary from the openai/codex github release
-wget -O /tmp/chatgpt_amd64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
-wget -O /tmp/openai-codex.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/openai-codex_0.166.0_amd64.deb
-sudo apt install -y /tmp/chatgpt_amd64.deb /tmp/openai-codex.deb
+# openai publishes the chatgpt .deb for both amd64 and arm64 (same url pattern, arch swapped)
+# codex: openai ships no .deb for the standalone cli; on amd64 this installs the deb on your
+# forky-post-install repo's releases, which wraps their official 0.166.0 linux binary. there is
+# no arm64 version of that deb, so on arm64 it installs openai's official aarch64 musl tarball
+# from the openai/codex github release straight into /usr/local/bin instead.
+if [ "$ARCH" = "amd64" ]; then
+  wget -O /tmp/chatgpt_amd64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
+  wget -O /tmp/openai-codex.deb https://github.com/cyroz1/forky-post-install/releases/latest/download/openai-codex_0.166.0_amd64.deb
+  sudo apt install -y /tmp/chatgpt_amd64.deb /tmp/openai-codex.deb
+else
+  wget -O /tmp/chatgpt_arm64.deb https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb
+  sudo apt install -y /tmp/chatgpt_arm64.deb
+  wget -O /tmp/codex-aarch64.tar.gz https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-aarch64-unknown-linux-musl.tar.gz
+  rm -rf /tmp/codex-aarch64 && mkdir -p /tmp/codex-aarch64
+  tar -xzf /tmp/codex-aarch64.tar.gz -C /tmp/codex-aarch64
+  CODEX_BIN="$(find /tmp/codex-aarch64 -type f -name 'codex-*' | head -1)"
+  if [ -n "$CODEX_BIN" ]; then
+    sudo install -m 0755 "$CODEX_BIN" /usr/local/bin/codex
+  else
+    echo "codex binary not found inside the aarch64 tarball, grab it manually from the openai/codex releases" >&2
+  fi
+fi
 
 echo "==> optimize + debloat"
 # startup services a gaming desktop does not need. all reversible with
@@ -184,6 +239,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # optional: LACT, amd gpu control panel (fan curves, clocks, power limit)
+# (the download grep below only matches the amd64 .deb; skip this block on arm64)
 # uncomment to grab the latest .deb from github:
 #
 # LACT_DEB=$(curl -s https://api.github.com/repos/ilya-zlobintsev/LACT/releases/latest \
