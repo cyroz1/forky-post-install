@@ -177,11 +177,12 @@ flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.f
   echo "serein flatpak install failed, grab it later from the serein github releases"
 
 if [ "$ARCH" = "amd64" ]; then
-  echo "==> installing Chromium; install Thorium separately after verifying its repository instructions"
-  sudo apt install -y chromium || echo "chromium unavailable in this release, skipping"
+  echo "==> installing Thorium from its upstream APT repository (repository is unsigned)"
+  printf '%s\n' 'deb [trusted=yes arch=amd64] https://dl.thorium.rocks/debian/ stable main' | sudo tee /etc/apt/sources.list.d/thorium.list >/dev/null
+  sudo apt update
+  sudo apt install -y thorium-browser
 else
-  echo "==> installing chromium on $ARCH"
-  sudo apt install -y chromium || echo "chromium unavailable in this release, skipping"
+  echo "==> skipping Thorium on $ARCH: upstream APT repository is amd64 only"
 fi
 
 echo "==> ChatGPT and Codex: install separately after verifying official packages"
