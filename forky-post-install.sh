@@ -127,6 +127,17 @@ if systemctl is-active --quiet systemd-networkd && ls /etc/systemd/network/10-*.
   fi
 fi
 
+echo "==> vmware guest tools (only inside a vmware vm)"
+# fusion on apple silicon gives arm linux guests no vmware-shipped tools, so
+# integration (shared folders, clipboard, drag/drop, display auto-resize)
+# runs on open-vm-tools. detect the hypervisor, not the arch, so an amd64
+# vm gets it too and bare metal skips it.
+if [ "$(systemd-detect-virt 2>/dev/null || true)" = "vmware" ]; then
+  sudo apt install -y open-vm-tools open-vm-tools-desktop || echo "open-vm-tools unavailable in this release, skipping"
+else
+  echo "not a vmware guest, skipping"
+fi
+
 echo "==> basics + dev tools"
 sudo apt install -y \
   git curl wget ffmpeg fastfetch \
