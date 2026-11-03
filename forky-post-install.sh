@@ -27,6 +27,11 @@ esac
 # progress output fed back in as commands). save a real copy and re-exec it.
 if [ ! -f "$0" ]; then
   curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/main/forky-post-install.sh" -o /tmp/forky-post-install.sh
+  # hand stdin back to the real terminal: the pipe is exhausted by now, and
+  # leaving it attached makes tmux die with "open terminal failed"
+  if [ -e /dev/tty ]; then
+    exec bash /tmp/forky-post-install.sh "$@" </dev/tty
+  fi
   exec bash /tmp/forky-post-install.sh "$@"
 fi
 
@@ -34,11 +39,15 @@ fi
 # the session (and any apt upgrade inside it) keeps going. rejoin it with
 #   tmux attach -t forky-setup
 if [ -z "${TMUX:-}" ] && [ -z "${FORKY_SETUP_TMUX:-}" ]; then
-  if ! command -v tmux >/dev/null 2>&1; then
-    sudo apt-get install -y tmux || true
-  fi
-  if command -v tmux >/dev/null 2>&1; then
-    FORKY_SETUP_TMUX=1 exec tmux new-session -A -s forky-setup "bash '$0' $*; echo; echo '=== setup exited, press enter for a shell ==='; bash"
+  if [ ! -t 0 ]; then
+    echo "==> no terminal on stdin, skipping the tmux wrapper"
+  else
+    if ! command -v tmux >/dev/null 2>&1; then
+      sudo apt-get install -y tmux || true
+    fi
+    if command -v tmux >/dev/null 2>&1; then
+      FORKY_SETUP_TMUX=1 exec tmux new-session -A -s forky-setup "bash '$0' $*; echo; echo '=== setup exited, press enter for a shell ==='; bash"
+    fi
   fi
 fi
 
