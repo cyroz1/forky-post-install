@@ -25,9 +25,22 @@ esac
 # launch shares stdin with the script itself, which corrupts the run (flatpak
 # progress output fed back in as commands). save a real copy and re-exec it.
 if [ ! -f "$0" ]; then
+  # pinned to a release tag, never a moving branch: what runs here goes on
+  # to sudo apt installs and root file writes, so the download is bound to
+  # an immutable ref and verified against the checksum committed next to
+  # it before anything executes. when cutting a new release: bump
+  # SCRIPT_REF, regenerate forky-post-install.sh.sha256 with
+  #   sha256sum forky-post-install.sh > forky-post-install.sh.sha256
+  # commit both, then tag the release with the same name.
+  SCRIPT_REF="v2"
   BOOTSTRAP_DIR="$(mktemp -d)"
   chmod 700 "$BOOTSTRAP_DIR"
-  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/main/forky-post-install.sh" -o "$BOOTSTRAP_DIR/forky-post-install.sh"
+  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/$SCRIPT_REF/forky-post-install.sh" -o "$BOOTSTRAP_DIR/forky-post-install.sh"
+  curl -fsSL "https://raw.githubusercontent.com/cyroz1/forky-post-install/$SCRIPT_REF/forky-post-install.sh.sha256" -o "$BOOTSTRAP_DIR/forky-post-install.sh.sha256"
+  if ! (cd "$BOOTSTRAP_DIR" && sha256sum -c forky-post-install.sh.sha256); then
+    echo "downloaded script failed its checksum check, refusing to run it" >&2
+    exit 1
+  fi
   # hand stdin back to the real terminal: the pipe is exhausted by now, and
   # leaving it attached makes tmux die with "open terminal failed"
   if [ -e /dev/tty ]; then
@@ -157,7 +170,36 @@ sudo systemctl enable --now fstrim.timer || true
 
 echo "==> flatpak + flathub"
 sudo apt install -y flatpak
-flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+# helpers: pull remote urls out of flatpak's detail listing
+# ($1 = --system|--user, $2 = remote name for the single-remote form)
+flatpak_remote_url() {
+  flatpak remote-list -d "$1" 2>/dev/null | awk -v name="$2" '$1 == name { for (i = 1; i <= NF; i++) if ($i ~ /^https?:\/\//) { print $i; exit } }'
+}
+flatpak_remote_urls() {
+  flatpak remote-list -d "$1" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^https?:\/\//) { print $i; break } }'
+}
+# the steam/mangohud installs below are --system, so the system remote is
+# the one that has to be right. remote-add --if-not-exists alone would
+# silently keep a pre-existing remote named flathub even if it pointed at
+# a different repo with a different signing key. check the url, replace a
+# wrong one, and refuse to go on if the system remote is not the real
+# flathub afterwards.
+FLATHUB_REMOTE_URL="https://dl.flathub.org/repo/"
+system_flathub_url="$(flatpak_remote_url --system flathub)"
+if [ -n "$system_flathub_url" ] && [ "$system_flathub_url" != "$FLATHUB_REMOTE_URL" ]; then
+  echo "WARNING: the existing system flathub remote points at $system_flathub_url, replacing it with the real flathub" >&2
+  sudo flatpak remote-delete --system flathub </dev/null || \
+    echo "could not remove the wrong flathub remote, the check below will fail" >&2
+  system_flathub_url=""
+fi
+if [ -z "$system_flathub_url" ]; then
+  sudo flatpak remote-add --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo </dev/null
+  system_flathub_url="$(flatpak_remote_url --system flathub)"
+fi
+if [ "$system_flathub_url" != "$FLATHUB_REMOTE_URL" ]; then
+  echo "ERROR: system flathub remote is not $FLATHUB_REMOTE_URL, refusing to install flatpaks from it" >&2
+  exit 1
+fi
 
 if [ "$ARCH" = "amd64" ]; then
   echo "==> steam (flatpak) + mangohud overlay for it"
@@ -173,16 +215,78 @@ else
 fi
 
 echo "==> serein (native discord client, flatpak from the project's own repo)"
-flatpak install --user -y https://viceverse-cz.github.io/Serein/flatpak/serein.flatpakref </dev/null || \
-  echo "serein flatpak install failed, grab it later from the serein github releases"
+# a .flatpakref is a trust-root definition: it names the app, the remote
+# to trust and the runtime repo, and flatpak adopts them persistently.
+# pin what this one is allowed to declare, check the downloaded ref
+# before flatpak sees it, and afterwards check which remotes the install
+# actually added. a mismatch stops the run: silently accepting a
+# different remote here hands a third-party site a permanent trusted
+# install source. (the ref currently declares no GPGKey of its own; the
+# remote it creates is bound by the url pin and the post-install check.)
+SEREIN_REF_URL="https://viceverse-cz.github.io/Serein/flatpak/serein.flatpakref"
+SEREIN_APP_ID="cz.viceverse.serein"
+SEREIN_REMOTE_URL="https://viceverse-cz.github.io/Serein/flatpak/repo"
+SEREIN_REF_FILE="$(mktemp)"
+if ! curl -fsSL "$SEREIN_REF_URL" </dev/null | tr -d '\r' > "$SEREIN_REF_FILE"; then
+  echo "serein flatpakref download failed, skipping serein" >&2
+else
+  for serein_expected in \
+    "Name=$SEREIN_APP_ID" \
+    "Url=$SEREIN_REMOTE_URL" \
+    "Branch=master" \
+    "RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo"; do
+    if ! grep -qxF "$serein_expected" "$SEREIN_REF_FILE"; then
+      echo "ERROR: serein.flatpakref does not match the pinned expectation: $serein_expected" >&2
+      echo "refusing to install it; if serein moved, update the pins in this script" >&2
+      rm -f "$SEREIN_REF_FILE"
+      exit 1
+    fi
+  done
+  serein_before="$(flatpak_remote_urls --user)"
+  if flatpak install --user -y "$SEREIN_REF_FILE" </dev/null; then
+    serein_after="$(flatpak_remote_urls --user)"
+    serein_new="$(printf '%s\n' "$serein_after" | grep -Fxv -f <(printf '%s\n' "$serein_before") || true)"
+    while IFS= read -r serein_new_url; do
+      case "$serein_new_url" in
+        ""|"$SEREIN_REMOTE_URL"|https://dl.flathub.org/repo/) ;;
+        *)
+          echo "ERROR: serein install added an unexpected user flatpak remote: $serein_new_url" >&2
+          rm -f "$SEREIN_REF_FILE"
+          exit 1
+          ;;
+      esac
+    done <<< "$serein_new"
+  else
+    echo "serein flatpak install failed, grab it later from the serein github releases"
+  fi
+fi
+rm -f "$SEREIN_REF_FILE"
 
 if [ "$ARCH" = "amd64" ]; then
-  echo "==> installing Thorium from its upstream APT repository (repository is unsigned)"
-  printf '%s\n' 'deb [trusted=yes arch=amd64] https://dl.thorium.rocks/debian/ stable main' | sudo tee /etc/apt/sources.list.d/thorium.list >/dev/null
-  sudo apt update
-  sudo apt install -y thorium-browser
+  echo "==> installing Thorium (pinned .deb, checksum verified)"
+  # upstream's APT repository is unsigned: no signed Release and no
+  # published key anywhere, so there is nothing for a signed-by keyring
+  # to verify against, and the old setup's answer (a persistent
+  # trusted=yes source) let that origin feed root installs forever.
+  # instead: no repository at all. one pinned .deb, checked against the
+  # sha256 below before apt sees it, and the legacy source file from
+  # older runs removed. bump the url and sha256 together when updating
+  # the pin (hashes are listed in the repo's own Packages index at
+  # dists/stable/main/binary-amd64/Packages).
+  THORIUM_DEB_URL="https://dl.thorium.rocks/debian/dists/stable/main/binary-amd64/thorium-browser_138.0.7204.303-1_amd64.deb"
+  THORIUM_DEB_SHA256="9bfad87fd5119720a1bc47af3b3e3efcbd92910032aa949d97bdc5191e2edb60"
+  sudo rm -f /etc/apt/sources.list.d/thorium.list
+  THORIUM_DIR="$(mktemp -d)"
+  chmod 755 "$THORIUM_DIR"
+  if curl -fsSL "$THORIUM_DEB_URL" -o "$THORIUM_DIR/thorium.deb" </dev/null \
+    && printf '%s  %s\n' "$THORIUM_DEB_SHA256" "$THORIUM_DIR/thorium.deb" | sha256sum -c - >/dev/null; then
+    sudo apt install -y "$THORIUM_DIR/thorium.deb" || echo "thorium .deb install failed, skipping"
+  else
+    echo "thorium download or checksum check failed, skipping it (the pin above may need a bump)" >&2
+  fi
+  rm -rf "$THORIUM_DIR"
 else
-  echo "==> skipping Thorium on $ARCH: upstream APT repository is amd64 only"
+  echo "==> skipping Thorium on $ARCH: upstream only ships amd64 builds"
 fi
 
 echo "==> ChatGPT and Codex: install separately after verifying official packages"
